@@ -39,7 +39,7 @@ class AdminResultsFilterParams(BaseModel):
 # =========================================================
 # PUBLIC SERVICE - LIST PUBLISHED RESULTS
 # =========================================================
-
+ 
 async def get_results(
     db: AsyncSession,
     page: int,
@@ -48,7 +48,7 @@ async def get_results(
     district_id: int | None,
 ):
     """Get published election results with pagination and basic filters"""
-
+ 
     base_query = (
         select(
             Election.election_id,
@@ -75,11 +75,11 @@ async def get_results(
         .group_by(Election.election_id, Candidate.candidate_id, Member.member_id)
         .order_by(Election.created_at.desc())
     )
-
+ 
     # Apply filters
     if election_level:
         base_query = base_query.where(Election.election_level == election_level)
-    
+   
     if district_id:
         base_query = (
             base_query
@@ -90,7 +90,7 @@ async def get_results(
             .join(District, District.district_id == Assembly.district_id)
             .where(District.district_id == district_id)
         )
-
+ 
     total = (
         await db.execute(
             select(func.count(Election.election_id.distinct())).select_from(
@@ -104,16 +104,16 @@ async def get_results(
             )
         )
     ).scalar() or 0
-
+ 
     rows = (
         await db.execute(base_query.offset((page - 1) * limit).limit(limit))
     ).all()
-
+ 
     items = []
-
+ 
     for election_id, title, winner_name, winner_votes, total_votes, published_at in rows:
         percentage = round((winner_votes / total_votes) * 100, 2) if total_votes else 0
-
+ 
         items.append(
             {
                 "election_id": election_id,
@@ -125,18 +125,19 @@ async def get_results(
                 "result_published_at": published_at,
             }
         )
-
+ 
     return {
         "items": items,
         "pagination": {
-            "page": page,
+            "                                                                                                                    page": page,
             "limit": limit,
             "total": total,
             "pages": (total + limit - 1) // limit,
         },
     }
-
-
+ 
+ 
+ 
 # =========================================================
 # PUBLIC SERVICE - LOCATION RESULT SUMMARY
 # =========================================================
@@ -418,17 +419,16 @@ async def calculate_election_winner(db: AsyncSession, election_id: int):
 # =========================================================
 # ADMIN SERVICE - GET ALL RESULTS (WITH FILTERS)
 # =========================================================
-
-async def admin_get_all_results(
-    db: AsyncSession,
-    admin_id: int,
-    filters: AdminResultsFilterParams,
-):
-    """
-    Get all completed election results for admin with location-based filtering.
-    Admin can filter by state, district, assembly, election level.
-    """
-
+# =========================================================
+from sqlalchemy import select, func
+from collections import defaultdict
+ 
+ 
+async def admin_get_all_results(db: AsyncSession, admin_id: int, filters: AdminResultsFilterParams):
+ 
+    # =========================================================
+    # 1️⃣ MAIN QUERY → WINNER DATA
+    # =========================================================
     query = (
         select(
             Election.election_id,
@@ -436,7 +436,8 @@ async def admin_get_all_results(
             Election.election_level,
             Member.name.label("winner_name"),
             Candidate.vote_count.label("winner_votes"),
-            func.count(Vote.vote_id).label("total_votes"),
+            Election.total_votes,
+            Election.winner_percentage,
             Election.result_published,
             Election.result_published_at,
             Election.created_at,
@@ -455,68 +456,81 @@ async def admin_get_all_results(
         .join(Assembly, Assembly.assembly_id == Mandal.assembly_id)
         .join(District, District.district_id == Assembly.district_id)
         .join(State, State.state_id == District.state_id)
-        .outerjoin(
-            Vote,
-            and_(
-                Vote.election_id == Election.election_id,
-                Vote.candidate_id == Candidate.candidate_id,
-            ),
-        )
         .where(
             Election.status == filters.status,
             Election.admin_id == admin_id,
             Candidate.is_winner == True,
         )
-        .group_by(
-            Election.election_id,
-            Candidate.candidate_id,
-            Member.member_id,
-            State.state_id,
-            District.district_id,
-            Assembly.assembly_id,
-            Mandal.mandal_id,
-            Village.village_id,
-            Ward.ward_id,
-        )
         .order_by(Election.created_at.desc())
     )
-
+ 
+    # Filters
     if filters.state_id:
         query = query.where(State.state_id == filters.state_id)
-
     if filters.district_id:
         query = query.where(District.district_id == filters.district_id)
-
     if filters.assembly_id:
         query = query.where(Assembly.assembly_id == filters.assembly_id)
-
     if filters.election_level:
         query = query.where(Election.election_level == filters.election_level)
-
+ 
+    # =========================================================
+    # 2️⃣ PAGINATION TOTAL
+    # =========================================================
     total = (
         await db.execute(
-            select(func.count(Election.election_id.distinct())).select_from(
-                select(Election.election_id)
-                .join(Candidate, Candidate.election_id == Election.election_id)
-                .join(Ward, Ward.ward_id == Election.ward_id)
-                .join(Village, Village.village_id == Ward.village_id)
-                .join(Mandal, Mandal.mandal_id == Village.mandal_id)
-                .join(Assembly, Assembly.assembly_id == Mandal.assembly_id)
-                .join(District, District.district_id == Assembly.district_id)
-                .join(State, State.state_id == District.state_id)
-                .where(
-                    Election.status == filters.status,
-                    Election.admin_id == admin_id,
-                    Candidate.is_winner == True,
-                )
+            select(func.count(Election.election_id)).where(
+                Election.status == filters.status,
+                Election.admin_id == admin_id,
             )
         )
     ).scalar() or 0
-
-    offset = (filters.page - 1) * filters.limit
-    rows = (await db.execute(query.offset(offset).limit(filters.limit))).all()
-
+ 
+    rows = (
+        await db.execute(
+            query.offset((filters.page - 1) * filters.limit).limit(filters.limit)
+        )
+    ).all()
+ 
+    if not rows:
+        return {"items": [], "pagination": {"page": filters.page, "limit": filters.limit, "total": 0, "pages": 0}}
+ 
+    # =========================================================
+    # 3️⃣ FETCH ALL CANDIDATES FOR THESE ELECTIONS
+    # =========================================================
+    election_ids = [row[0] for row in rows]
+ 
+    candidates_query = (
+        select(
+            Candidate.election_id,
+            Member.name,
+            Candidate.vote_count,
+            Candidate.is_winner,
+        )
+        .join(Member, Member.member_id == Candidate.member_id)
+        .where(Candidate.election_id.in_(election_ids))
+        .order_by(Candidate.vote_count.desc())
+    )
+ 
+    candidate_rows = (await db.execute(candidates_query)).all()
+ 
+    # Group candidates by election_id
+    candidates_map = defaultdict(list)
+ 
+    for election_id, name, votes, is_winner in candidate_rows:
+        candidates_map[election_id].append(
+            {
+                "name": name,
+                "votes": votes,
+                "is_winner": is_winner,
+            }
+        )
+ 
+    # =========================================================
+    # 4️⃣ BUILD FINAL RESPONSE
+    # =========================================================
     items = []
+ 
     for row in rows:
         (
             election_id,
@@ -525,6 +539,7 @@ async def admin_get_all_results(
             winner_name,
             winner_votes,
             total_votes,
+            winner_percentage,
             result_published,
             result_published_at,
             created_at,
@@ -535,9 +550,7 @@ async def admin_get_all_results(
             village_name,
             ward_number,
         ) = row
-
-        percentage = round((winner_votes / total_votes) * 100, 2) if total_votes else 0
-
+ 
         items.append(
             {
                 "election_id": election_id,
@@ -546,19 +559,24 @@ async def admin_get_all_results(
                 "winner_name": winner_name,
                 "winner_votes": winner_votes,
                 "total_votes": total_votes,
-                "percentage": percentage,
+                "percentage": winner_percentage,
+ 
                 "state_name": state_name,
                 "district_name": district_name,
                 "assembly_name": assembly_name,
                 "mandal_name": mandal_name,
                 "village_name": village_name,
                 "ward_number": ward_number,
+ 
                 "result_published": result_published,
                 "result_published_at": result_published_at.isoformat() if result_published_at else None,
                 "created_at": created_at.isoformat() if created_at else None,
+ 
+                # ⭐ NEW → all candidates list
+                "candidates": candidates_map.get(election_id, []),
             }
         )
-
+ 
     return {
         "items": items,
         "pagination": {
@@ -567,17 +585,12 @@ async def admin_get_all_results(
             "total": total,
             "pages": (total + filters.limit - 1) // filters.limit,
         },
-        "filters_applied": {
-            "status": filters.status,
-            "state_id": filters.state_id,
-            "district_id": filters.district_id,
-            "assembly_id": filters.assembly_id,
-            "election_level": filters.election_level,
-        },
-        "total_count": total,
     }
-
-
+# =========================================================
+# ADMIN SERVICE - GET RESULTS BY DISTRICT
+# =========================================================
+ 
+ 
 # =========================================================
 # ADMIN SERVICE - GET RESULTS BY DISTRICT
 # =========================================================

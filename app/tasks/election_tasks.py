@@ -1,25 +1,18 @@
 from datetime import datetime
-from sqlalchemy import update, select
-from app.models.models import Election, ElectionEvent
 import pytz
-
-
+from sqlalchemy import update
+ 
+from app.models.models import Election, ElectionEvent
+from app.core.database import async_session_maker
+ 
 IST = pytz.timezone("Asia/Kolkata")
-
-
+ 
+ 
 async def update_election_status(db):
-    """
-    Update election status using IST time.
-    Election timing comes from ElectionEvent table.
-    """
-
-    # Current IST time (naive to match MySQL DATETIME)
     now = datetime.now(IST).replace(tzinfo=None)
     print("STATUS CRON RUN AT:", now)
-
-    # --------------------------------------------------
-    # 1️⃣ NOMINATION OPEN
-    # --------------------------------------------------
+ 
+    # NOMINATION OPEN
     await db.execute(
         update(Election)
         .where(
@@ -29,10 +22,8 @@ async def update_election_status(db):
         )
         .values(status="NOMINATION_OPEN")
     )
-
-    # --------------------------------------------------
-    # 2️⃣ READY FOR POLL (after nomination end, before voting start)
-    # --------------------------------------------------
+ 
+    # READY FOR POLL
     await db.execute(
         update(Election)
         .where(
@@ -42,10 +33,8 @@ async def update_election_status(db):
         )
         .values(status="READY_FOR_POLL")
     )
-
-    # --------------------------------------------------
-    # 3️⃣ VOTING ACTIVE
-    # --------------------------------------------------
+ 
+    # VOTING ACTIVE
     await db.execute(
         update(Election)
         .where(
@@ -55,10 +44,8 @@ async def update_election_status(db):
         )
         .values(status="ACTIVE")
     )
-
-    # --------------------------------------------------
-    # 4️⃣ COMPLETED
-    # --------------------------------------------------
+ 
+    # COMPLETED
     await db.execute(
         update(Election)
         .where(
@@ -67,5 +54,11 @@ async def update_election_status(db):
         )
         .values(status="COMPLETED")
     )
-
+ 
     await db.commit()
+ 
+ 
+async def run_status_update():
+    async with async_session_maker() as db:
+        await update_election_status(db)
+ 

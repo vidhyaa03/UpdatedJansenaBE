@@ -98,49 +98,96 @@ async def create_election(db: AsyncSession, data, admin_id: int):
     }
 
 
-# =========================================================
-# GET ELECTIONS (PURE IST RETURN)
-# =========================================================
+from sqlalchemy import select, func
+ 
+ 
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+ 
+from app.models.models import (
+    Election, ElectionEvent, Ward, Village, Mandal, Assembly, District, Member
+)
+ 
+ 
 async def get_elections(db: AsyncSession, status: str | None = None):
     """
-    Returns elections with IST dates exactly as stored.
+    Returns election list with:
+    - total voters in ward
+    - total votes polled
+    - Combined geographical location string
     """
-
+ 
+    voters_subq = (
+        select(
+            Member.ward_id,
+            func.count(Member.member_id).label("total_voters")
+        )
+        .where(Member.is_eligible_to_vote == True)
+        .group_by(Member.ward_id)
+        .subquery()
+    )
+ 
     query = (
-        select(Election, ElectionEvent, Ward, Village, Mandal, Assembly, District)
+        select(
+            Election,
+            ElectionEvent,
+            Ward,
+            Village,
+            Mandal,
+            Assembly,
+            District,
+            voters_subq.c.total_voters,
+        )
         .join(ElectionEvent, Election.event_id == ElectionEvent.event_id)
         .join(Ward, Election.ward_id == Ward.ward_id)
         .join(Village, Ward.village_id == Village.village_id)
         .join(Mandal, Village.mandal_id == Mandal.mandal_id)
         .join(Assembly, Mandal.assembly_id == Assembly.assembly_id)
         .join(District, Assembly.district_id == District.district_id)
+        .outerjoin(voters_subq, voters_subq.c.ward_id == Ward.ward_id)
         .order_by(Election.created_at.desc())
     )
-
+ 
     if status:
         query = query.where(Election.status == status.upper())
-
+ 
     rows = (await db.execute(query)).all()
-
+ 
     elections = []
-
-    for e, ev, w, v, m, a, d in rows:
+ 
+    for e, ev, w, v, m, a, d, total_voters in rows:
+ 
+        # ⭐ Combined readable location
+        location = f"{w.ward_name}, {v.village_name}, {a.assembly_name}, {d.district_name}"
+ 
         elections.append({
             "event_id": ev.event_id,
             "election_id": e.election_id,
             "title": ev.title,
             "status": e.status,
-            "district": d.district_name,
-            "assembly": a.assembly_name,
-            "mandal": m.mandal_name,
-            "village": v.village_name,
-            "ward": w.ward_name,
-
-            # ✔ IST values returned exactly
+ 
+            # ⭐ Single combined field
+            "location": location,
+ 
+            # Optional → keep ward_id for frontend routing
+            "ward_id": w.ward_id,
+ 
+            # Counts
+            "total_voters": total_voters or 0,
+            "total_votes_polled": e.total_votes,
+ 
+            # Result flags
+            "result_calculated": e.result_calculated,
+            "result_published": e.result_published,
+ 
+            # Schedule
             "nomination_start": ev.nomination_start,
             "nomination_end": ev.nomination_end,
             "voting_start": ev.voting_start,
             "voting_end": ev.voting_end,
+ 
+            "created_at": e.created_at,
         })
-
+ 
     return elections
+ 

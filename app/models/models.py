@@ -221,6 +221,8 @@ class Election(Base):
     title = Column(String(150), nullable=False)
     status = Column(String(50), default="DRAFT")
     total_votes = Column(Integer, default=0)
+    result_calculated = Column(Boolean, default=False)
+    winner_percentage = Column(Float, default=0)
     result_published = Column(Boolean, default=False)
     result_published_at = Column(DateTime, nullable=True)
     
