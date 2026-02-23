@@ -16,4 +16,4 @@ spec:
       - name: backend
         image: drevathi837/backend:latest
         ports:
-        - containerPort: 80
+        - containerPort: 8000
